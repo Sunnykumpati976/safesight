@@ -1,13 +1,14 @@
 """
-SafeSight — real-time object detection backend.
+SafeSight — real-time computer-vision backend.
 
-A FastAPI service that accepts webcam frames over a WebSocket, runs YOLOv8
-inference on each frame, and streams back detections (boxes, labels, scores)
-plus lightweight per-class counts for the live dashboard.
+A FastAPI service that accepts webcam frames over a WebSocket and runs one of three
+YOLOv8 tasks per frame — object **detection**, instance **segmentation**, or **pose**
+estimation — streaming the results back for the browser to render as a live overlay.
 """
 from __future__ import annotations
 
 import base64
+import json
 import time
 from contextlib import asynccontextmanager
 
@@ -17,50 +18,96 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from ultralytics import YOLO
 
-# Loaded once at startup and reused for every connection/frame.
-MODEL: YOLO | None = None
-# yolov8s = "small": noticeably more accurate than nano, still real-time on CPU.
-MODEL_NAME = "yolov8s.pt"
-CONF_THRESHOLD = 0.4  # slightly higher to cut false positives for a cleaner demo
-IMG_SIZE = 640         # inference resolution
+# One model per task. "s" (small) balances accuracy and real-time speed on CPU.
+MODEL_FILES = {
+    "detect": "yolov8s.pt",
+    "segment": "yolov8s-seg.pt",
+    "pose": "yolov8s-pose.pt",
+}
+MODELS: dict[str, YOLO] = {}
+IMG_SIZE = 640
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global MODEL
-    print(f"[SafeSight] loading model {MODEL_NAME} ...")
-    MODEL = YOLO(MODEL_NAME)  # downloads weights on first run, then cached
-    # Warm up so the first real frame isn't slow.
-    MODEL.predict(np.zeros((640, 640, 3), dtype=np.uint8), verbose=False)
-    print("[SafeSight] model ready.")
+    for task, fname in MODEL_FILES.items():
+        print(f"[SafeSight] loading {task} model ({fname}) ...")
+        m = YOLO(fname)
+        m.predict(np.zeros((640, 640, 3), dtype=np.uint8), verbose=False)  # warm up
+        MODELS[task] = m
+    print("[SafeSight] all models ready.")
     yield
-    MODEL = None
+    MODELS.clear()
 
 
 app = FastAPI(title="SafeSight API", lifespan=lifespan)
-
 app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # demo only; lock this down for production
-    allow_methods=["*"],
-    allow_headers=["*"],
+    CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"]
 )
 
 
 @app.get("/health")
 def health() -> dict:
-    return {"status": "ok", "model": MODEL_NAME, "loaded": MODEL is not None}
+    return {"status": "ok", "tasks": list(MODELS.keys()), "loaded": len(MODELS) == 3}
 
 
 def _decode_frame(data_url: str) -> np.ndarray | None:
-    """Turn a base64 data URL from the browser into a BGR image array."""
     try:
-        header, _, encoded = data_url.partition(",")
-        raw = base64.b64decode(encoded or header)
-        arr = np.frombuffer(raw, dtype=np.uint8)
+        _, _, encoded = data_url.partition(",")
+        arr = np.frombuffer(base64.b64decode(encoded), dtype=np.uint8)
         return cv2.imdecode(arr, cv2.IMREAD_COLOR)
     except Exception:
         return None
+
+
+def _run(task: str, frame: np.ndarray, conf: float) -> dict:
+    model = MODELS[task]
+    res = model.predict(frame, conf=conf, imgsz=IMG_SIZE, verbose=False)[0]
+    h, w = frame.shape[:2]
+    counts: dict[str, int] = {}
+
+    if task == "pose":
+        people = []
+        kpts = res.keypoints
+        if kpts is not None and kpts.xyn is not None:
+            for person in kpts.xyn.cpu().numpy():  # (17, 2) normalized
+                # attach visibility/conf if present
+                pts = [[float(x), float(y)] for x, y in person]
+                people.append(pts)
+        counts["person"] = len(people)
+        return {"mode": "pose", "people": people, "counts": counts}
+
+    if task == "segment":
+        polygons = []
+        masks = res.masks
+        names = res.names
+        if masks is not None and masks.xyn is not None:
+            for poly, box in zip(masks.xyn, res.boxes):
+                label = names[int(box.cls[0])]
+                polygons.append(
+                    {
+                        "points": [[float(x), float(y)] for x, y in poly],
+                        "label": label,
+                        "conf": round(float(box.conf[0]), 2),
+                    }
+                )
+                counts[label] = counts.get(label, 0) + 1
+        return {"mode": "segment", "polygons": polygons, "counts": counts}
+
+    # detect
+    detections = []
+    for box in res.boxes:
+        label = res.names[int(box.cls[0])]
+        x1, y1, x2, y2 = box.xyxy[0].tolist()
+        detections.append(
+            {
+                "x": x1 / w, "y": y1 / h,
+                "w": (x2 - x1) / w, "h": (y2 - y1) / h,
+                "label": label, "conf": round(float(box.conf[0]), 2),
+            }
+        )
+        counts[label] = counts.get(label, 0) + 1
+    return {"mode": "detect", "detections": detections, "counts": counts}
 
 
 @app.websocket("/ws/detect")
@@ -69,43 +116,26 @@ async def detect(ws: WebSocket) -> None:
     print("[SafeSight] client connected")
     try:
         while True:
-            data_url = await ws.receive_text()
+            raw = await ws.receive_text()
             t0 = time.perf_counter()
-            frame = _decode_frame(data_url)
-            if frame is None or MODEL is None:
-                await ws.send_json({"detections": [], "counts": {}, "fps": 0})
+            try:
+                msg = json.loads(raw)
+                frame = _decode_frame(msg.get("frame", ""))
+                task = msg.get("mode", "detect")
+                conf = float(msg.get("conf", 0.4))
+            except Exception:
+                frame, task, conf = None, "detect", 0.4
+
+            if frame is None or task not in MODELS:
+                await ws.send_json({"mode": task, "counts": {}, "fps": 0})
                 continue
 
-            results = MODEL.predict(
-                frame, conf=CONF_THRESHOLD, imgsz=IMG_SIZE, verbose=False
-            )[0]
-            h, w = frame.shape[:2]
-
-            detections = []
-            counts: dict[str, int] = {}
-            for box in results.boxes:
-                cls_id = int(box.cls[0])
-                label = MODEL.names[cls_id]
-                conf = float(box.conf[0])
-                x1, y1, x2, y2 = box.xyxy[0].tolist()
-                detections.append(
-                    {
-                        # normalized 0..1 so the frontend scales to any video size
-                        "x": x1 / w,
-                        "y": y1 / h,
-                        "w": (x2 - x1) / w,
-                        "h": (y2 - y1) / h,
-                        "label": label,
-                        "conf": round(conf, 2),
-                    }
-                )
-                counts[label] = counts.get(label, 0) + 1
-
-            fps = round(1.0 / max(time.perf_counter() - t0, 1e-6), 1)
-            await ws.send_json({"detections": detections, "counts": counts, "fps": fps})
+            payload = _run(task, frame, conf)
+            payload["fps"] = round(1.0 / max(time.perf_counter() - t0, 1e-6), 1)
+            await ws.send_json(payload)
     except WebSocketDisconnect:
         print("[SafeSight] client disconnected")
-    except Exception as exc:  # keep the socket error from crashing the server
+    except Exception as exc:
         print(f"[SafeSight] error: {exc}")
 
 

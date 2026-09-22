@@ -14,10 +14,13 @@ live bounding boxes and a class-count dashboard in the browser — all with sub-
 ---
 
 ## ✨ Features
-- 🎥 **Live webcam detection** — 80 object classes (COCO), real-time bounding boxes
-- 📡 **WebSocket streaming** — frames up, detections down, no page reloads
-- 📊 **Analytics dashboard** — inference FPS + live per-class object counts
-- 🎨 **Deterministic colors** per class, confidence scores on every box
+- 🧠 **Three CV tasks in one engine** — switch live between:
+  - **Object detection** — 80 COCO classes with HUD-style corner-bracket boxes
+  - **Instance segmentation** — pixel-accurate colored masks tracing each object
+  - **Pose estimation** — real-time 17-keypoint skeleton tracking on people
+- 🎚️ **Live confidence threshold** — tune precision/recall from the UI in real time
+- 📡 **WebSocket streaming** — frames up, results down, no page reloads
+- 📊 **Analytics dashboard** — inference FPS, live counts, peak, unique classes, session uptime + rolling detection feed
 - ⚙️ **Clean service split** — FastAPI inference API + React (Vite) client
 
 ## 🧱 Architecture
@@ -29,7 +32,7 @@ Browser (React)                    Backend (FastAPI)
 ```
 
 ## 🛠️ Tech Stack
-**ML/CV:** Python, PyTorch, Ultralytics YOLOv8, OpenCV
+**ML/CV:** Python, PyTorch, Ultralytics YOLOv8 (detect / seg / pose), OpenCV
 **Backend:** FastAPI, WebSockets, Uvicorn
 **Frontend:** React, Vite, Canvas API
 
