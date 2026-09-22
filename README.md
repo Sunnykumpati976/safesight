@@ -1,10 +1,11 @@
-# 🛰️ SafeSight — Real-Time Object Detection
+# 🛰️ SafeSight — Real-Time Vision Engine
 
 A real-time computer-vision web app: your webcam streams to a Python backend that runs
-**YOLOv8** inference on every frame and streams detections back over a **WebSocket**, drawing
-live bounding boxes and a class-count dashboard in the browser — all with sub-100ms latency on CPU.
+**YOLOv8** inference on every frame — **object detection, instance segmentation, or pose
+estimation** — and streams the results back over a **WebSocket** to a live overlay + analytics
+dashboard in the browser, all with low latency on CPU.
 
-> Built to demonstrate end-to-end ML engineering: model serving, real-time streaming, and a production-style frontend.
+> Built to demonstrate end-to-end ML engineering: multi-task model serving, real-time streaming, and a production-style frontend.
 
 <!-- Record a 20–30s screen capture and drop it here -->
 ![demo](docs/demo.gif)
