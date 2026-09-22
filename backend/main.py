@@ -19,8 +19,10 @@ from ultralytics import YOLO
 
 # Loaded once at startup and reused for every connection/frame.
 MODEL: YOLO | None = None
-MODEL_NAME = "yolov8n.pt"  # nano = fast enough for real-time on CPU
-CONF_THRESHOLD = 0.35
+# yolov8s = "small": noticeably more accurate than nano, still real-time on CPU.
+MODEL_NAME = "yolov8s.pt"
+CONF_THRESHOLD = 0.4  # slightly higher to cut false positives for a cleaner demo
+IMG_SIZE = 640         # inference resolution
 
 
 @asynccontextmanager
@@ -74,7 +76,9 @@ async def detect(ws: WebSocket) -> None:
                 await ws.send_json({"detections": [], "counts": {}, "fps": 0})
                 continue
 
-            results = MODEL.predict(frame, conf=CONF_THRESHOLD, verbose=False)[0]
+            results = MODEL.predict(
+                frame, conf=CONF_THRESHOLD, imgsz=IMG_SIZE, verbose=False
+            )[0]
             h, w = frame.shape[:2]
 
             detections = []
