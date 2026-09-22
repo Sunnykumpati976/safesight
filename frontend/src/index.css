@@ -1,0 +1,23 @@
+:root {
+  --bg: #0b0e14;
+  --panel: #131722;
+  --panel-2: #1b2130;
+  --border: #262d3d;
+  --text: #e6e9ef;
+  --muted: #8b93a7;
+  --accent: #3ddc97;
+  --danger: #ff5c7a;
+  font-family: system-ui, "Segoe UI", Roboto, sans-serif;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: radial-gradient(1200px 600px at 70% -10%, #17233a 0%, var(--bg) 55%);
+  color: var(--text);
+  min-height: 100svh;
+}
+
+#root { width: 100%; }
